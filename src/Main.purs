@@ -34,6 +34,52 @@ main = HA.runHalogenAff do
   body <- HA.awaitBody
   runUI component unit body
 
+component :: forall query input output. Component query input output Aff
+component =
+  H.mkComponent
+    { initialState
+    , render
+    , eval: H.mkEval $ H.defaultEval { handleAction = handleAction, initialize = Just Initialize }
+    }
+  where
+  initialState :: forall a. a -> Array String
+  initialState _ = []
+
+  render state =
+    HH.section
+      [ HP.id "section" ]
+      [ HH.div [ HP.class_ $ wrap "columns" ]
+          [ HH.div [ HP.class_ $ wrap "column" ] []
+          , HH.div [ HP.classes [ wrap "column", wrap "is-two-thirds" ] ]
+            [ editorToolbar
+                , statePreview state
+            ]
+          , HH.div [ HP.class_ $ wrap "column" ] []
+          ]
+      ]
+
+  handleAction :: forall o. Action -> H.HalogenM (Array String) Action () o Aff Unit
+  handleAction = case _ of
+    Initialize -> do
+      focusEditor
+      handleAction (MkHeading 0)
+    UpdateText -> H.getHTMLElementRef editorRef >>= traverse_ \el -> do
+      txt <- liftEffect $ fetchTextBuffer el
+      H.modify_ \_ -> txt
+    ApplyStyle style -> do
+      focusEditor
+      liftEffect $ applyStyle style
+    MkList -> do
+      focusEditor
+      liftEffect F.mkList
+    MkHeading i -> do
+      focusEditor
+      liftEffect $ F.mkHeading i
+
+---------------
+--- Actions ---
+---------------
+
 data Action = Initialize | UpdateText | ApplyStyle Style | MkList | MkHeading Int
 
 data Style = Bold | Italic | Underline
@@ -43,6 +89,13 @@ applyStyle style = case style of
   Bold -> F.bold
   Italic -> F.italic
   Underline -> F.underline
+
+statePreview :: forall a b. Array String -> HH.HTML a b
+statePreview = HH.div_ <<< map (HH.div_ <<< pure <<< HH.text)
+
+-------------------
+--- Editor Form ---
+-------------------
 
 editorRef :: H.RefLabel
 editorRef = H.RefLabel "editor"
@@ -93,51 +146,9 @@ editorForm =
   , HE.onKeyUp \_ -> UpdateText
   ] []
 
-statePreview :: forall a b. Array String -> HH.HTML a b
-statePreview = HH.div_ <<< map (HH.div_ <<< pure <<< HH.text)
-
-component :: forall query input output. Component query input output Aff
-component =
-  H.mkComponent
-    { initialState
-    , render
-    , eval: H.mkEval $ H.defaultEval { handleAction = handleAction, initialize = Just Initialize }
-    }
-  where
-  initialState :: forall a. a -> Array String
-  initialState _ = []
-
-  render state =
-    HH.section
-      [ HP.id "section" ]
-      [ HH.div [ HP.class_ $ wrap "columns" ]
-          [ HH.div [ HP.class_ $ wrap "column" ] []
-          , HH.div [ HP.classes [ wrap "column", wrap "is-two-thirds" ] ]
-            [ editorToolbar
-            , editorForm
-            , statePreview state
-            ]
-          , HH.div [ HP.class_ $ wrap "column" ] []
-          ]
-      ]
-
-  handleAction :: forall o. Action -> H.HalogenM (Array String) Action () o Aff Unit
-  handleAction = case _ of
-    Initialize -> do
-      focusEditor
-      handleAction (MkHeading 0)
-    UpdateText -> H.getHTMLElementRef editorRef >>= traverse_ \el -> do
-      txt <- liftEffect $ fetchTextBuffer el
-      H.modify_ \_ -> txt
-    ApplyStyle style -> do
-      focusEditor
-      liftEffect $ applyStyle style
-    MkList -> do
-      focusEditor
-      liftEffect F.mkList
-    MkHeading i -> do
-      focusEditor
-      liftEffect $ F.mkHeading i
+---------------------------
+--- Text Buffer Parsing ---
+---------------------------
 
 fetchTextBuffer :: HTMLElement -> Effect (Array String)
 fetchTextBuffer el = do
