@@ -29,6 +29,13 @@ import Web.HTML.HTMLDocument as Document
 import Web.HTML.HTMLElement (HTMLElement, fromElement, toNode, toParentNode, focus)
 import Web.HTML.Window as Window
 
+-- TODO: Add toolbar to component state and highlight active buttons
+-- TODO: Clean up the node conversions using a typeclass
+-- TODO: Parse nodes to generate markdown
+-- TODO: Overload TAB, CTRL-B, CTRL-I, CTRL-U for editor
+-- TODO: Parse and render markdown input into editor.
+-- TODO: Calculate buffer diffs.
+
 main :: Effect Unit
 main = HA.runHalogenAff do
   body <- HA.awaitBody
