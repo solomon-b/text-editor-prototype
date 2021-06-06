@@ -1,17 +1,18 @@
 module Main where
 
+import Effect.Console
 import Prelude
 
 import Data.Array (mapMaybe)
 import Data.Foldable (fold, traverse_)
 import Data.Maybe (Maybe(..), maybe, isJust)
-import Data.Traversable (for, traverse)
 import Data.Newtype (wrap)
-
+import Data.Traversable (for, traverse)
 import Effect (Effect)
-import Effect.Class (liftEffect)
 import Effect.Aff (Aff)
 import Effect.Aff.Class (liftAff)
+import Effect.Class (liftEffect)
+import Format as F
 import Halogen as H
 import Halogen.Aff as HA
 import Halogen.Component (Component)
@@ -19,31 +20,37 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.VDom.Driver (runUI)
-
-import Web.HTML as HTML
-import Web.HTML.Window as Window
-import Web.HTML.HTMLDocument as Document
-import Web.HTML.HTMLElement (HTMLElement, fromElement, toNode, toParentNode, focus)
 import Web.DOM.Element as El
+import Web.DOM.HTMLCollection (toArray)
 import Web.DOM.Node (Node, nodeName, textContent)
 import Web.DOM.ParentNode as PN
-import Web.DOM.HTMLCollection (toArray)
-
-import Effect.Console
-
-import Format as F
+import Web.HTML as HTML
+import Web.HTML.HTMLDocument as Document
+import Web.HTML.HTMLElement (HTMLElement, fromElement, toNode, toParentNode, focus)
+import Web.HTML.Window as Window
 
 main :: Effect Unit
 main = HA.runHalogenAff do
-  editor <- liftAff $ getElementById "foo"
-  liftEffect $ log $ show $ isJust editor
   body <- HA.awaitBody
   runUI component unit body
 
-data Action = Initialize | UpdateText | Bold | Italic | Underline | MkList | MkHeading Int
+data Action = Initialize | UpdateText | ApplyStyle Style | MkList | MkHeading Int
+
+data Style = Bold | Italic | Underline
+
+applyStyle :: Style -> Effect Unit
+applyStyle style = case style of
+  Bold -> F.bold
+  Italic -> F.italic
+  Underline -> F.underline
 
 editorRef :: H.RefLabel
 editorRef = H.RefLabel "editor"
+
+focusEditor :: forall a b c d. H.HalogenM a b c d Aff Unit
+focusEditor = do
+  editor <- H.getHTMLElementRef editorRef
+  liftEffect $ maybe mempty focus editor
 
 editorToolbar :: forall a. HH.HTML a Action
 editorToolbar = HH.div
@@ -66,26 +73,14 @@ editorToolbar = HH.div
              [HH.text "Heading 6"]
           ]
       ]
-  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap "is-info" ] ]
-    [ HH.span [ HP.classes [ wrap "fa", wrap "fa-bold", wrap "fa-fw"]
-              , HE.onClick \_ -> Bold
-              ] []
-    ]
-  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap "is-info" ] ]
-    [ HH.span [ HP.classes [ wrap "fa", wrap "fa-italic", wrap "fa-fw"]
-              , HE.onClick \_ -> Italic
-              ] []
-    ]
-  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap "is-info" ] ]
-    [ HH.span [ HP.classes [ wrap "fa", wrap "fa-underline", wrap "fa-fw"]
-              , HE.onClick \_ -> Underline
-              ] []
-    ]
-  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap "is-info" ] ]
-    [ HH.span [ HP.classes [ wrap "fa", wrap "fa-list", wrap "fa-fw"]
-              , HE.onClick \_ -> MkList
-              ] []
-    ]
+  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap "is-info" ], HE.onClick \_ -> ApplyStyle Bold ]
+    [ HH.span [ HP.classes [ wrap "fa", wrap "fa-bold", wrap "fa-fw" ] ] [] ]
+  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap "is-info" ], HE.onClick \_ -> ApplyStyle Italic ]
+    [ HH.span [ HP.classes [ wrap "fa", wrap "fa-italic", wrap "fa-fw" ]] [] ]
+  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap "is-info" ], HE.onClick \_ -> ApplyStyle Underline ]
+    [ HH.span [ HP.classes [ wrap "fa", wrap "fa-underline", wrap "fa-fw"] ] [] ]
+  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap "is-info" ], HE.onClick \_ -> MkList ]
+    [ HH.span [ HP.classes [ wrap "fa", wrap "fa-list", wrap "fa-fw" ] ] [] ]
   ]
 
 editorForm :: forall a. HH.HTML a Action
@@ -129,31 +124,19 @@ component =
   handleAction :: forall o. Action -> H.HalogenM (Array String) Action () o Aff Unit
   handleAction = case _ of
     Initialize -> do
-      editor <- H.getHTMLElementRef editorRef
-      liftEffect $ maybe mempty focus editor
+      focusEditor
       handleAction (MkHeading 0)
     UpdateText -> H.getHTMLElementRef editorRef >>= traverse_ \el -> do
       txt <- liftEffect $ fetchTextBuffer el
       H.modify_ \_ -> txt
-    Bold -> do
-      editor <- H.getHTMLElementRef editorRef
-      liftEffect $ maybe mempty focus editor
-      liftEffect F.bold
-    Italic -> do
-      editor <- H.getHTMLElementRef editorRef
-      liftEffect $ maybe mempty focus editor
-      liftEffect F.italic
-    Underline -> do
-      editor <- H.getHTMLElementRef editorRef
-      liftEffect $ maybe mempty focus editor
-      liftEffect F.underline
+    ApplyStyle style -> do
+      focusEditor
+      liftEffect $ applyStyle style
     MkList -> do
-      editor <- H.getHTMLElementRef editorRef
-      liftEffect $ maybe mempty focus editor
+      focusEditor
       liftEffect F.mkList
     MkHeading i -> do
-      editor <- H.getHTMLElementRef editorRef
-      liftEffect $ maybe mempty focus editor
+      focusEditor
       liftEffect $ F.mkHeading i
 
 fetchTextBuffer :: HTMLElement -> Effect (Array String)
