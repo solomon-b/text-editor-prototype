@@ -5,12 +5,11 @@ import Prelude
 
 import Data.Array (mapMaybe)
 import Data.Foldable (fold, traverse_)
-import Data.Maybe (Maybe(..), maybe, isJust)
+import Data.Maybe (Maybe(..), maybe)
 import Data.Newtype (wrap)
 import Data.Traversable (for, traverse)
 import Effect (Effect)
 import Effect.Aff (Aff)
-import Effect.Aff.Class (liftAff)
 import Effect.Class (liftEffect)
 import Format as F
 import Halogen as H
@@ -22,17 +21,13 @@ import Halogen.HTML.Properties as HP
 import Halogen.VDom.Driver (runUI)
 import Web.DOM.Element as El
 import Web.DOM.HTMLCollection (toArray)
-import Web.DOM.Node (Node, nodeName, textContent)
+import Web.DOM.Node (nodeName, textContent)
 import Web.DOM.ParentNode as PN
-import Web.HTML as HTML
-import Web.HTML.HTMLDocument as Document
 import Web.HTML.HTMLElement (HTMLElement, fromElement, toNode, toParentNode, focus)
-import Web.HTML.Window as Window
 
--- TODO: Add toolbar to component state and highlight active buttons
+-- TODO: Overload TAB, CTRL-B, CTRL-I, CTRL-U for editor
 -- TODO: Clean up the node conversions using a typeclass
 -- TODO: Parse nodes to generate markdown
--- TODO: Overload TAB, CTRL-B, CTRL-I, CTRL-U for editor
 -- TODO: Parse and render markdown input into editor.
 -- TODO: Calculate buffer diffs.
 
@@ -49,8 +44,8 @@ component =
     , eval: H.mkEval $ H.defaultEval { handleAction = handleAction, initialize = Just Initialize }
     }
   where
-  initialState :: forall a. a -> Array String
-  initialState _ = []
+  initialState :: forall a. a -> State
+  initialState _ = { buffer: [], toolbarState: { bold: false, italic: false, underline: false } }
 
   render state =
     HH.section
@@ -58,30 +53,45 @@ component =
       [ HH.div [ HP.class_ $ wrap "columns" ]
           [ HH.div [ HP.class_ $ wrap "column" ] []
           , HH.div [ HP.classes [ wrap "column", wrap "is-two-thirds" ] ]
-            [ editorToolbar
-                , statePreview state
+            [ editorToolbar state.toolbarState
+            , editorForm
+            , bufferPreview state.buffer
             ]
           , HH.div [ HP.class_ $ wrap "column" ] []
           ]
       ]
 
-  handleAction :: forall o. Action -> H.HalogenM (Array String) Action () o Aff Unit
+  handleAction :: forall o. Action -> H.HalogenM State Action () o Aff Unit
   handleAction = case _ of
     Initialize -> do
       focusEditor
       handleAction (MkHeading 0)
     UpdateText -> H.getHTMLElementRef editorRef >>= traverse_ \el -> do
       txt <- liftEffect $ fetchTextBuffer el
-      H.modify_ \_ -> txt
+      H.modify_ \state -> state { buffer = txt }
     ApplyStyle style -> do
       focusEditor
       liftEffect $ applyStyle style
+      case style of
+        Bold -> H.modify_ \state -> state { toolbarState { bold = not state.toolbarState.bold }}
+        Italic -> H.modify_ \state -> state { toolbarState { italic = not state.toolbarState.italic }}
+        Underline -> H.modify_ \state -> state { toolbarState { underline = not state.toolbarState.underline }}
     MkList -> do
       focusEditor
       liftEffect F.mkList
     MkHeading i -> do
       focusEditor
       liftEffect $ F.mkHeading i
+
+-------------
+--- State ---
+-------------
+
+type ToolbarState = { bold :: Boolean, italic :: Boolean, underline :: Boolean }
+type State = { buffer :: Array String, toolbarState :: ToolbarState }
+
+bufferPreview :: forall a b. Array String -> HH.HTML a b
+bufferPreview = HH.div_ <<< map (HH.div_ <<< pure <<< HH.text)
 
 ---------------
 --- Actions ---
@@ -97,9 +107,6 @@ applyStyle style = case style of
   Italic -> F.italic
   Underline -> F.underline
 
-statePreview :: forall a b. Array String -> HH.HTML a b
-statePreview = HH.div_ <<< map (HH.div_ <<< pure <<< HH.text)
-
 -------------------
 --- Editor Form ---
 -------------------
@@ -112,8 +119,8 @@ focusEditor = do
   editor <- H.getHTMLElementRef editorRef
   liftEffect $ maybe mempty focus editor
 
-editorToolbar :: forall a. HH.HTML a Action
-editorToolbar = HH.div
+editorToolbar :: forall a. ToolbarState -> HH.HTML a Action
+editorToolbar state = HH.div
   [ HP.classes [ wrap "box" ] ]
   [ HH.div [ HP.classes [ wrap "select" ]]
       [ HH.select []
@@ -133,13 +140,13 @@ editorToolbar = HH.div
              [HH.text "Heading 6"]
           ]
       ]
-  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap "is-info" ], HE.onClick \_ -> ApplyStyle Bold ]
+  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap (if state.bold then "is-info" else "is-dark") ], HE.onClick \_ -> ApplyStyle Bold ]
     [ HH.span [ HP.classes [ wrap "fa", wrap "fa-bold", wrap "fa-fw" ] ] [] ]
-  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap "is-info" ], HE.onClick \_ -> ApplyStyle Italic ]
+  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap (if state.italic then "is-info" else "is-dark") ], HE.onClick \_ -> ApplyStyle Italic ]
     [ HH.span [ HP.classes [ wrap "fa", wrap "fa-italic", wrap "fa-fw" ]] [] ]
-  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap "is-info" ], HE.onClick \_ -> ApplyStyle Underline ]
+  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap (if state.underline then "is-info" else "is-dark") ], HE.onClick \_ -> ApplyStyle Underline ]
     [ HH.span [ HP.classes [ wrap "fa", wrap "fa-underline", wrap "fa-fw"] ] [] ]
-  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap "is-info" ], HE.onClick \_ -> MkList ]
+  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap "is-dark" ], HE.onClick \_ -> MkList ]
     [ HH.span [ HP.classes [ wrap "fa", wrap "fa-list", wrap "fa-fw" ] ] [] ]
   ]
 
