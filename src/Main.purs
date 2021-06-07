@@ -4,8 +4,9 @@ import Effect.Console
 import Prelude
 
 import Data.Array (mapMaybe)
-import Data.Foldable (fold, traverse_)
+import Data.Foldable (elem, fold, traverse_)
 import Data.Maybe (Maybe(..), maybe)
+import Data.Int (fromString)
 import Data.Newtype (wrap)
 import Data.Traversable (for, traverse)
 import Effect (Effect)
@@ -23,9 +24,12 @@ import Web.DOM.Element as El
 import Web.DOM.HTMLCollection (toArray)
 import Web.DOM.Node (nodeName, textContent)
 import Web.DOM.ParentNode as PN
+import Web.Event.Event as E
+import Web.UIEvent.KeyboardEvent as KE
 import Web.HTML.HTMLElement (HTMLElement, fromElement, toNode, toParentNode, focus)
 
--- TODO: Overload TAB, CTRL-B, CTRL-I, CTRL-U for editor
+import Web.UIEvent.KeyboardEvent
+
 -- TODO: Clean up the node conversions using a typeclass
 -- TODO: Parse nodes to generate markdown
 -- TODO: Parse and render markdown input into editor.
@@ -66,6 +70,21 @@ component =
     Initialize -> do
       focusEditor
       handleAction (MkHeading 0)
+    KeyPress e | key e == "b" && ctrlKey e -> do
+      liftEffect $ E.preventDefault (KE.toEvent e)
+      handleAction $ ApplyStyle Bold
+    KeyPress e | key e == "i" && ctrlKey e -> do
+      liftEffect $ E.preventDefault (KE.toEvent e)
+      handleAction $ ApplyStyle Italic
+    KeyPress e | key e == "u" && ctrlKey e -> do
+      liftEffect $ E.preventDefault (KE.toEvent e)
+      handleAction $ ApplyStyle Underline
+    KeyPress e | key e `elem` ["0", "1", "2", "3", "4", "5", "6"] && ctrlKey e ->
+      case fromString (key e) of
+        Just n -> do
+          handleAction $ MkHeading n
+        Nothing -> pure unit
+    KeyPress e -> pure unit
     UpdateText -> H.getHTMLElementRef editorRef >>= traverse_ \el -> do
       txt <- liftEffect $ fetchTextBuffer el
       H.modify_ \state -> state { buffer = txt }
@@ -97,7 +116,7 @@ bufferPreview = HH.div_ <<< map (HH.div_ <<< pure <<< HH.text)
 --- Actions ---
 ---------------
 
-data Action = Initialize | UpdateText | ApplyStyle Style | MkList | MkHeading Int
+data Action = Initialize | KeyPress KeyboardEvent | UpdateText | ApplyStyle Style | MkList | MkHeading Int
 
 data Style = Bold | Italic | Underline
 
@@ -153,11 +172,13 @@ editorToolbar state = HH.div
 editorForm :: forall a. HH.HTML a Action
 editorForm =
   HH.div
-  [ HP.classes [ wrap "box", wrap "content" ]
+  [ HP.classes [ wrap "content", wrap "is-fullheight" ]
+  , HP.style "height: 70vh;"
   , HP.id "editor"
   , HP.ref editorRef
   , HH.attr (HH.AttrName "contenteditable") "true"
   , HE.onKeyUp \_ -> UpdateText
+  , HE.onKeyDown \e -> KeyPress e
   ] []
 
 ---------------------------
