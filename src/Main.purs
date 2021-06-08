@@ -2,13 +2,14 @@ module Main where
 
 import Effect.Console
 import Prelude
+import Web.UIEvent.KeyboardEvent
 
 import Data.Array (mapMaybe)
-import Data.Foldable (elem, fold, traverse_)
-import Data.Maybe (Maybe(..), maybe)
+import Data.Foldable (elem, fold, intercalate, traverse_)
 import Data.Int (fromString)
+import Data.Maybe (Maybe(..), maybe)
 import Data.Newtype (wrap)
-import Data.Traversable (for, traverse)
+import Data.Traversable (for, for_, traverse)
 import Effect (Effect)
 import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
@@ -22,15 +23,13 @@ import Halogen.HTML.Properties as HP
 import Halogen.VDom.Driver (runUI)
 import Web.DOM.Element as El
 import Web.DOM.HTMLCollection (toArray)
-import Web.DOM.Node (nodeName, textContent)
+import Web.DOM.Node as N
+import Web.DOM.NodeList as NL
 import Web.DOM.ParentNode as PN
 import Web.Event.Event as E
-import Web.UIEvent.KeyboardEvent as KE
 import Web.HTML.HTMLElement (HTMLElement, fromElement, toNode, toParentNode, focus)
+import Web.UIEvent.KeyboardEvent as KE
 
-import Web.UIEvent.KeyboardEvent
-
--- TODO: Clean up the node conversions using a typeclass
 -- TODO: Parse nodes to generate markdown
 -- TODO: Parse and render markdown input into editor.
 -- TODO: Calculate buffer diffs.
@@ -49,7 +48,7 @@ component =
     }
   where
   initialState :: forall a. a -> State
-  initialState _ = { buffer: [], toolbarState: { bold: false, italic: false, underline: false } }
+  initialState _ = { buffer: "", toolbarState: { bold: false, italic: false, underline: false } }
 
   render state =
     HH.section
@@ -76,17 +75,15 @@ component =
     KeyPress e | key e == "i" && ctrlKey e -> do
       liftEffect $ E.preventDefault (KE.toEvent e)
       handleAction $ ApplyStyle Italic
-    KeyPress e | key e == "u" && ctrlKey e -> do
-      liftEffect $ E.preventDefault (KE.toEvent e)
-      handleAction $ ApplyStyle Underline
     KeyPress e | key e `elem` ["0", "1", "2", "3", "4", "5", "6"] && ctrlKey e ->
       case fromString (key e) of
         Just n -> do
+          focusEditor
           handleAction $ MkHeading n
         Nothing -> pure unit
     KeyPress e -> pure unit
     UpdateText -> H.getHTMLElementRef editorRef >>= traverse_ \el -> do
-      txt <- liftEffect $ fetchTextBuffer el
+      txt <- liftEffect $ fetchEditorBuffer el
       H.modify_ \state -> state { buffer = txt }
     ApplyStyle style -> do
       focusEditor
@@ -94,7 +91,6 @@ component =
       case style of
         Bold -> H.modify_ \state -> state { toolbarState { bold = not state.toolbarState.bold }}
         Italic -> H.modify_ \state -> state { toolbarState { italic = not state.toolbarState.italic }}
-        Underline -> H.modify_ \state -> state { toolbarState { underline = not state.toolbarState.underline }}
     MkList -> do
       focusEditor
       liftEffect F.mkList
@@ -107,10 +103,10 @@ component =
 -------------
 
 type ToolbarState = { bold :: Boolean, italic :: Boolean, underline :: Boolean }
-type State = { buffer :: Array String, toolbarState :: ToolbarState }
+type State = { buffer :: String, toolbarState :: ToolbarState }
 
-bufferPreview :: forall a b. Array String -> HH.HTML a b
-bufferPreview = HH.div_ <<< map (HH.div_ <<< pure <<< HH.text)
+bufferPreview :: forall a b. String -> HH.HTML a b
+bufferPreview = HH.p_ <<< pure <<< HH.text
 
 ---------------
 --- Actions ---
@@ -118,13 +114,12 @@ bufferPreview = HH.div_ <<< map (HH.div_ <<< pure <<< HH.text)
 
 data Action = Initialize | KeyPress KeyboardEvent | UpdateText | ApplyStyle Style | MkList | MkHeading Int
 
-data Style = Bold | Italic | Underline
+data Style = Bold | Italic
 
 applyStyle :: Style -> Effect Unit
 applyStyle style = case style of
   Bold -> F.bold
   Italic -> F.italic
-  Underline -> F.underline
 
 -------------------
 --- Editor Form ---
@@ -163,8 +158,6 @@ editorToolbar state = HH.div
     [ HH.span [ HP.classes [ wrap "fa", wrap "fa-bold", wrap "fa-fw" ] ] [] ]
   , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap (if state.italic then "is-info" else "is-dark") ], HE.onClick \_ -> ApplyStyle Italic ]
     [ HH.span [ HP.classes [ wrap "fa", wrap "fa-italic", wrap "fa-fw" ]] [] ]
-  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap (if state.underline then "is-info" else "is-dark") ], HE.onClick \_ -> ApplyStyle Underline ]
-    [ HH.span [ HP.classes [ wrap "fa", wrap "fa-underline", wrap "fa-fw"] ] [] ]
   , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap "is-dark" ], HE.onClick \_ -> MkList ]
     [ HH.span [ HP.classes [ wrap "fa", wrap "fa-list", wrap "fa-fw" ] ] [] ]
   ]
@@ -185,19 +178,42 @@ editorForm =
 --- Text Buffer Parsing ---
 ---------------------------
 
-fetchTextBuffer :: HTMLElement -> Effect (Array String)
-fetchTextBuffer el = do
-  children <- mapMaybe fromElement <$> (toArray =<< PN.children (toParentNode el))
-  traverse (textContent <<< toNode) children
+foldNode :: N.Node -> Effect String
+foldNode n
+  | N.nodeTypeIndex n == 3 = N.textContent n
+  | N.nodeTypeIndex n == 1 = do
+       children' <- NL.toArray =<< N.childNodes n
+       txts <- traverse foldNode children'
+       case N.nodeName n of
+         "B"  -> pure $ "**"      <> fold txts <> "**" <> "\\n"
+         "I"  -> pure $ "*"       <> fold txts <> "*" <> "\\n"
+         "LI" -> pure $ "- "      <> fold txts <> "\\n"
+         "H1" -> pure $ "# "      <> fold txts <> "\\n"
+         "H2" -> pure $ "## "     <> fold txts <> "\\n"
+         "H3" -> pure $ "### "    <> fold txts <> "\\n"
+         "H4" -> pure $ "#### "   <> fold txts <> "\\n"
+         "H5" -> pure $ "##### "  <> fold txts <> "\\n"
+         "H6" -> pure $ "###### " <> fold txts <> "\\n"
+         _ -> pure $ fold txts
+  | otherwise = pure mempty
 
--- TODO:
-parseNode :: HTMLElement -> Effect String
-parseNode el = do
-  let n = toNode el
-  childCollection <- PN.children $ toParentNode el
-  childElements <- toArray childCollection
-  map fold $ for childElements $ \el' -> do
-    let n' = El.toNode el'
-    txt <- textContent n'
-    --log (nodeName n')
-    if nodeName n' == "B" then pure ("**" <> txt <> "**") else pure txt
+fetchEditorBuffer :: HTMLElement -> Effect String
+fetchEditorBuffer buffer = do
+  let node = toNode buffer
+  foldNode node
+
+{-
+<div class="content is-fullheight" style="height: 70vh;" id="editor" contenteditable="true">
+  <h1>One</h1>
+  <div>t<b>wo</b></div>
+  <div>okay<br></div>
+  <div>
+    <h3>Three</h3>
+    <div>four<br></div>
+  </div>
+</div>
+
+# One\nt**wo**\nokay\n### Three\nfour
+
+# One\nt**wo**\nokay### Three\nfour
+-}
