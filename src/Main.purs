@@ -4,12 +4,13 @@ import Effect.Console
 import Prelude
 import Web.UIEvent.KeyboardEvent
 
-import Data.Array (mapMaybe)
-import Data.Foldable (elem, fold, intercalate, traverse_)
+import Data.Array (mapMaybe, replicate)
+import Data.Foldable (elem, fold, foldMap, intercalate, traverse_)
 import Data.Int (fromString)
 import Data.Maybe (Maybe(..), maybe)
 import Data.Newtype (wrap)
 import Data.Traversable (for, for_, traverse)
+import Data.Tuple
 import Effect (Effect)
 import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
@@ -30,7 +31,6 @@ import Web.Event.Event as E
 import Web.HTML.HTMLElement (HTMLElement, fromElement, toNode, toParentNode, focus)
 import Web.UIEvent.KeyboardEvent as KE
 
--- TODO: Parse nodes to generate markdown
 -- TODO: Parse and render markdown input into editor.
 -- TODO: Calculate buffer diffs.
 
@@ -48,14 +48,14 @@ component =
     }
   where
   initialState :: forall a. a -> State
-  initialState _ = { buffer: "", toolbarState: { bold: false, italic: false, underline: false } }
+  initialState _ = { buffer: [], toolbarState: { bold: false, italic: false, underline: false } }
 
   render state =
     HH.section
       [ HP.id "section" ]
       [ HH.div [ HP.class_ $ wrap "columns" ]
           [ HH.div [ HP.class_ $ wrap "column" ] []
-          , HH.div [ HP.classes [ wrap "column", wrap "is-two-thirds" ] ]
+          , HH.div [ HP.classes [ wrap "column", wrap "is-5" ] ]
             [ editorToolbar state.toolbarState
             , editorForm
             , bufferPreview state.buffer
@@ -83,8 +83,9 @@ component =
         Nothing -> pure unit
     KeyPress e -> pure unit
     UpdateText -> H.getHTMLElementRef editorRef >>= traverse_ \el -> do
-      txt <- liftEffect $ fetchEditorBuffer el
-      H.modify_ \state -> state { buffer = txt }
+      lines <- liftEffect $ flattenNodes $ toNode el
+      let buffer' = map printLine lines
+      H.modify_ \state -> state { buffer = buffer' }
     ApplyStyle style -> do
       focusEditor
       liftEffect $ applyStyle style
@@ -103,10 +104,10 @@ component =
 -------------
 
 type ToolbarState = { bold :: Boolean, italic :: Boolean, underline :: Boolean }
-type State = { buffer :: String, toolbarState :: ToolbarState }
+type State = { buffer :: Array String, toolbarState :: ToolbarState }
 
-bufferPreview :: forall a b. String -> HH.HTML a b
-bufferPreview = HH.p_ <<< pure <<< HH.text
+bufferPreview :: forall a b. Array String -> HH.HTML a b
+bufferPreview xs = HH.div_ $ map (HH.div_ <<< pure <<< HH.text) xs --HH.p_ <<< pure <<< HH.text
 
 ---------------
 --- Actions ---
@@ -166,7 +167,7 @@ editorForm :: forall a. HH.HTML a Action
 editorForm =
   HH.div
   [ HP.classes [ wrap "content", wrap "is-fullheight" ]
-  , HP.style "height: 70vh;"
+  , HP.style "height: 70vh; 0px solid transparent;"
   , HP.id "editor"
   , HP.ref editorRef
   , HH.attr (HH.AttrName "contenteditable") "true"
@@ -178,42 +179,42 @@ editorForm =
 --- Text Buffer Parsing ---
 ---------------------------
 
-foldNode :: N.Node -> Effect String
-foldNode n
-  | N.nodeTypeIndex n == 3 = N.textContent n
-  | N.nodeTypeIndex n == 1 = do
-       children' <- NL.toArray =<< N.childNodes n
-       txts <- traverse foldNode children'
-       case N.nodeName n of
-         "B"  -> pure $ "**"      <> fold txts <> "**" <> "\\n"
-         "I"  -> pure $ "*"       <> fold txts <> "*" <> "\\n"
-         "LI" -> pure $ "- "      <> fold txts <> "\\n"
-         "H1" -> pure $ "# "      <> fold txts <> "\\n"
-         "H2" -> pure $ "## "     <> fold txts <> "\\n"
-         "H3" -> pure $ "### "    <> fold txts <> "\\n"
-         "H4" -> pure $ "#### "   <> fold txts <> "\\n"
-         "H5" -> pure $ "##### "  <> fold txts <> "\\n"
-         "H6" -> pure $ "###### " <> fold txts <> "\\n"
-         _ -> pure $ fold txts
-  | otherwise = pure mempty
-
-fetchEditorBuffer :: HTMLElement -> Effect String
-fetchEditorBuffer buffer = do
-  let node = toNode buffer
-  foldNode node
+data Line = Heading Int (Array Line) | ListItem (Array Line) | Text String | Ann (Array Line) Style
 
 {-
-<div class="content is-fullheight" style="height: 70vh;" id="editor" contenteditable="true">
-  <h1>One</h1>
-  <div>t<b>wo</b></div>
-  <div>okay<br></div>
-  <div>
-    <h3>Three</h3>
-    <div>four<br></div>
-  </div>
-</div>
 
-# One\nt**wo**\nokay\n### Three\nfour
+<p>hello <b>are <i>you</i> okay</b></p>
 
-# One\nt**wo**\nokay### Three\nfour
+Ann [Text "Hello", Ann [Text "are", Ann [Text "you"] Italic , Text "okay"] Bold]
+
 -}
+
+flattenNodes :: N.Node -> Effect (Array Line)
+flattenNodes n
+  | N.nodeTypeIndex n == 3 = (pure <<< Text) <$> N.textContent n
+  | N.nodeTypeIndex n == 1 = do
+       children' <- NL.toArray =<< N.childNodes n
+       txts <- fold <$> traverse flattenNodes children'
+       case N.nodeName n of
+         "B" -> pure [Ann txts Bold]
+         "I" -> pure [Ann txts Italic]
+         "LI" -> pure [ListItem txts]
+         "H1" -> pure [Heading 1 txts]
+         "H2" -> pure [Heading 2 txts]
+         "H3" -> pure [Heading 3 txts]
+         "H4" -> pure [Heading 4 txts]
+         "H5" -> pure [Heading 5 txts]
+         "H6" -> pure [Heading 6 txts]
+         _ -> pure txts
+  | otherwise = pure []
+
+printLine :: Line -> String
+printLine (Heading i r) = fold (replicate i "#") <> " " <> foldMap printLine r
+printLine (Text txt) = txt
+printLine (ListItem r) = "- " <> foldMap printLine r
+printLine (Ann [] _) = ""
+printLine (Ann r ann) =
+  let txt = foldMap printLine r
+  in case ann of
+       Bold -> "**" <> txt <> "**"
+       Italic -> "*" <> txt <> "**"
