@@ -2,11 +2,12 @@ module Main where
 
 import Effect.Console
 import Prelude
-import Web.UIEvent.KeyboardEvent
 
-import Data.Array (mapMaybe, replicate)
+import Data.Array (length, mapMaybe, replicate, splitAt, (..), zip)
 import Data.Foldable (elem, fold, foldMap, intercalate, traverse_)
 import Data.Int (fromString)
+import Data.Lens
+import Data.Lens.Index
 import Data.Maybe (Maybe(..), maybe)
 import Data.Newtype (wrap)
 import Data.Traversable (for, for_, traverse)
@@ -14,7 +15,10 @@ import Data.Tuple
 import Effect (Effect)
 import Effect.Aff (Aff)
 import Effect.Class (liftEffect)
+
+import Caret as C
 import Format as F
+
 import Halogen as H
 import Halogen.Aff as HA
 import Halogen.Component (Component)
@@ -48,7 +52,7 @@ component =
     }
   where
   initialState :: forall a. a -> State
-  initialState _ = { buffer: [], toolbarState: { bold: false, italic: false, underline: false } }
+  initialState _ = { buffer: [""], focus: 0, toolbarState: { bold: false, italic: false, underline: false } }
 
   render state =
     HH.section
@@ -57,63 +61,78 @@ component =
           [ HH.div [ HP.class_ $ wrap "column" ] []
           , HH.div [ HP.classes [ wrap "column", wrap "is-5" ] ]
             [ editorToolbar state.toolbarState
-            , editorForm
-            , bufferPreview state.buffer
+            , editorForm state.buffer
+            --, bufferPreview state.buffer
             ]
           , HH.div [ HP.class_ $ wrap "column" ] []
           ]
       ]
 
   handleAction :: forall o. Action -> H.HalogenM State Action () o Aff Unit
-  handleAction = case _ of
-    Initialize -> do
-      focusEditor
-      handleAction (MkHeading 0)
-    KeyPress e | key e == "b" && ctrlKey e -> do
-      liftEffect $ E.preventDefault (KE.toEvent e)
-      handleAction $ ApplyStyle Bold
-    KeyPress e | key e == "i" && ctrlKey e -> do
-      liftEffect $ E.preventDefault (KE.toEvent e)
-      handleAction $ ApplyStyle Italic
-    KeyPress e | key e `elem` ["0", "1", "2", "3", "4", "5", "6"] && ctrlKey e ->
-      case fromString (key e) of
-        Just n -> do
-          focusEditor
-          handleAction $ MkHeading n
-        Nothing -> pure unit
-    KeyPress e -> pure unit
-    UpdateText -> H.getHTMLElementRef editorRef >>= traverse_ \el -> do
-      lines <- liftEffect $ flattenNodes $ toNode el
-      let buffer' = map printLine lines
-      H.modify_ \state -> state { buffer = buffer' }
-    ApplyStyle style -> do
-      focusEditor
-      liftEffect $ applyStyle style
-      case style of
-        Bold -> H.modify_ \state -> state { toolbarState { bold = not state.toolbarState.bold }}
-        Italic -> H.modify_ \state -> state { toolbarState { italic = not state.toolbarState.italic }}
-    MkList -> do
-      focusEditor
-      liftEffect F.mkList
-    MkHeading i -> do
-      focusEditor
-      liftEffect $ F.mkHeading i
+  handleAction action = do
+    updateBuffer
+    s <- H.get
+    liftEffect $ log $ show s.buffer
+    case action of
+      Initialize -> do
+        focusRow 0
+      --KeyPress _ e | key e == "b" && ctrlKey e -> do
+      --  liftEffect $ E.preventDefault (KE.toEvent e)
+      --  handleAction $ ApplyStyle Bold
+      --KeyPress _ e | key e == "i" && ctrlKey e -> do
+      --  liftEffect $ E.preventDefault (KE.toEvent e)
+      --  handleAction $ ApplyStyle Italic
+      --KeyPress _ e | key e `elem` ["0", "1", "2", "3", "4", "5", "6"] && ctrlKey e ->
+      --  case fromString (key e) of
+      --    Just n -> do
+      --      focusRow
+      --      handleAction $ MkHeading n
+      --    Nothing -> pure unit
+      KeyPress r e | KE.key e == "Enter" -> do
+        liftEffect $ E.preventDefault (KE.toEvent e)
+        addRow r
+        focusRow (r + 1)
+      KeyPress r e | KE.key e == "ArrowUp" -> do
+        liftEffect $ E.preventDefault (KE.toEvent e)
+        focusRow (r - 1)
+      KeyPress r e | KE.key e == "ArrowDown" -> do
+        liftEffect $ E.preventDefault (KE.toEvent e)
+        focusRow (r + 1)
+      KeyPress r e -> do
+        liftEffect $ log $ KE.key e
+        pure unit
+--      UpdateText -> H.getHTMLElementRef editorRef >>= traverse_ \el -> do
+--        lines <- liftEffect $ flattenNodes $ toNode el
+--        let buffer' = map printLine lines
+--        H.modify_ \state -> state { buffer = buffer' }
+      ApplyStyle style -> do
+        --focusRow
+        liftEffect $ applyStyle style
+        case style of
+          Bold -> H.modify_ \state -> state { toolbarState { bold = not state.toolbarState.bold }}
+          Italic -> H.modify_ \state -> state { toolbarState { italic = not state.toolbarState.italic }}
+      MkList -> do
+        --focusRow
+        liftEffect F.mkList
+      MkHeading i -> do
+        --focusRow
+        liftEffect $ F.mkHeading i
 
 -------------
 --- State ---
 -------------
 
 type ToolbarState = { bold :: Boolean, italic :: Boolean, underline :: Boolean }
-type State = { buffer :: Array String, toolbarState :: ToolbarState }
+type State = { buffer :: Array String, focus :: Int, toolbarState :: ToolbarState }
 
 bufferPreview :: forall a b. Array String -> HH.HTML a b
-bufferPreview xs = HH.div_ $ map (HH.div_ <<< pure <<< HH.text) xs --HH.p_ <<< pure <<< HH.text
+bufferPreview xs = HH.div_ $ map (HH.div_ <<< pure <<< HH.text) xs
 
 ---------------
 --- Actions ---
 ---------------
 
-data Action = Initialize | KeyPress KeyboardEvent | UpdateText | ApplyStyle Style | MkList | MkHeading Int
+data Action = Initialize | KeyPress Int KE.KeyboardEvent | ApplyStyle Style | MkList | MkHeading Int
 
 data Style = Bold | Italic
 
@@ -122,17 +141,37 @@ applyStyle style = case style of
   Bold -> F.bold
   Italic -> F.italic
 
+updateBuffer :: forall a b c. H.HalogenM State a b c Aff Unit
+updateBuffer = do
+  editorDiv' <- H.getHTMLElementRef editorRef
+  case editorDiv' of
+    Nothing -> pure unit
+    Just editorDiv -> do
+      let n = toNode editorDiv
+      children' <- liftEffect (NL.toArray =<< N.childNodes n)
+      newBuffer <- liftEffect $ traverse N.textContent children'
+      H.modify_ \state -> state { buffer = newBuffer }
+
+focusRow :: forall a b c d. Int -> H.HalogenM a b c d Aff Unit
+focusRow i = do
+  row <- H.getHTMLElementRef $ H.RefLabel $ show i
+  offSet <- liftEffect $ C.getOffset
+  liftEffect $ do
+    maybe mempty focus row
+    C.shiftOffset offSet
+
+addRow :: forall o. Int -> H.HalogenM State Action () o Aff Unit
+addRow i =
+  H.modify_ \state ->
+    let res = splitAt (i + 1) state.buffer
+    in state { buffer = res.before <> [""] <> res.after }
+
 -------------------
 --- Editor Form ---
 -------------------
 
 editorRef :: H.RefLabel
 editorRef = H.RefLabel "editor"
-
-focusEditor :: forall a b c d. H.HalogenM a b c d Aff Unit
-focusEditor = do
-  editor <- H.getHTMLElementRef editorRef
-  liftEffect $ maybe mempty focus editor
 
 editorToolbar :: forall a. ToolbarState -> HH.HTML a Action
 editorToolbar state = HH.div
@@ -163,17 +202,19 @@ editorToolbar state = HH.div
     [ HH.span [ HP.classes [ wrap "fa", wrap "fa-list", wrap "fa-fw" ] ] [] ]
   ]
 
-editorForm :: forall a. HH.HTML a Action
-editorForm =
-  HH.div
-  [ HP.classes [ wrap "content", wrap "is-fullheight" ]
-  , HP.style "height: 70vh; 0px solid transparent;"
-  , HP.id "editor"
-  , HP.ref editorRef
+editorForm :: forall a. Array String -> HH.HTML a Action
+editorForm rows =
+  HH.div [ HP.id "editor", HP.ref editorRef ] $ map editorRow (0 .. (length rows - 1))
+
+editorRow :: forall a. Int -> HH.HTML a Action
+editorRow id =
+  HH.p
+  [ HP.classes [ wrap "content" ]
+  , HP.id $ show id
+  , HP.ref $ H.RefLabel $ show id
   , HH.attr (HH.AttrName "contenteditable") "true"
-  , HE.onKeyUp \_ -> UpdateText
-  , HE.onKeyDown \e -> KeyPress e
-  ] []
+  , HE.onKeyDown \e -> KeyPress id e
+  ] [ ]
 
 ---------------------------
 --- Text Buffer Parsing ---
