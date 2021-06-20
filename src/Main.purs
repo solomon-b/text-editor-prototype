@@ -3,12 +3,13 @@ module Main where
 import Prelude
 
 import Caret as C
-import Data.Array (findIndex, index, length, replicate, splitAt, updateAt)
+import Data.Array (findIndex, index, length, replicate, splitAt, updateAt, insertAt)
 import Data.Foldable (fold, foldMap)
 import Data.Int (fromString)
 import Data.Lazy (Lazy, defer, force)
 import Data.Maybe (Maybe(..), maybe)
 import Data.Newtype (wrap)
+import Data.String (splitAt) as Str
 import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Editor as Editor
@@ -137,7 +138,7 @@ handleAction action =
         E.preventDefault (KE.toEvent e)
         E.stopPropagation (KE.toEvent e)
       addRow r
-      focusRow (r + 1)
+      adjustFocus r Down
     KeyPress r e | KE.key e == "ArrowUp" -> do
       liftEffect $ E.preventDefault (KE.toEvent e)
       adjustFocus r Up
@@ -186,13 +187,10 @@ adjustFocus id dir = do
 
 addRow :: forall o m. MonadEffect m => Int -> H.HalogenM State Action () o m Unit
 addRow focusedRow = do
-  liftEffect $ log $ show $ "focusedRow: " <> show focusedRow
+  offset <- getCaretOffset
   i <- fetchFreshVariable
 
-  H.modify_ \state ->
-    let j = maybe (length state.buffer) identity $ findIndex (\(Row id _) -> id == focusedRow) state.buffer
-        res = splitAt (j + 1) state.buffer
-    in state { buffer = res.before <> [Row i (Txt "")] <> res.after }
+  H.modify_ \state -> state { buffer = bufferInsert focusedRow offset i state.buffer }
 
   rowTag' <- H.getHTMLElementRef $ H.RefLabel $ show i
   case rowTag' of
@@ -201,6 +199,31 @@ addRow focusedRow = do
       H.subscribe' \_ ->
         let toInputChanged r' = InputChanged (r'.id) (r'.content)
         in eventListener IET.input (toEventTarget rowTag) (map (toInputChanged <<< Editor.getValue) <<< IE.fromEvent)
+
+contentSplitAt :: Int -> Content -> { before :: Content, after :: Content }
+contentSplitAt offset (Txt str) =
+  let { before: before, after: after} = Str.splitAt offset str
+  in { before: Txt before, after: Txt after }
+contentSplitAt offset (P content) =
+  let { before: before, after: after} = contentSplitAt offset content
+  in { before: P before, after: P after }
+contentSplitAt offset (Styled style content) =
+  let { before: before, after: after} = contentSplitAt offset content
+  in { before: Styled style before, after: Styled style after }
+
+rowSplitAt :: Int -> BufferRow -> Id -> { before :: BufferRow, after :: BufferRow }
+rowSplitAt offset (Row i content) j =
+  let { before: before, after: after} = contentSplitAt offset content
+  in { before: Row i before, after: Row j after}
+
+bufferInsert :: Id -> Int -> Int -> Array BufferRow -> Array BufferRow
+bufferInsert id offset j buff =
+ let i = maybe (length buff) identity $ findIndex (\(Row id' _) -> id == id') buff
+     buff' = do
+       x <- index buff i
+       let {before: before, after: after} = rowSplitAt offset x j
+       insertAt (i + 1) after =<< updateAt i before buff
+  in maybe buff identity buff'
 
 ---------------
 --- Render ---
