@@ -51,18 +51,25 @@ component =
 -------------
 
 type Id = Int
-type Content = String
-
+data Content = Styled Style Content | P Content | Txt String
+data Style = Bold | Italic
 data BufferRow = Row Id Content
+data ShiftFocus = Up | Down
+
+instance showContent :: Show Content where
+  show (Txt content) = content
+  show (P content) = "<p>" <> show content <> "</p>"
+  show (Styled Bold content) = "<b>" <> show content <> "</b>"
+  show (Styled Italic content) = "<i>" <> show content <> "</i>"
 
 instance showBuffer :: Show BufferRow where
-  show (Row id content) = "Row " <> show id <> " " <> content
+  show (Row id content) = "Row " <> show id <> " " <> show content
 
 type ToolbarState = { bold :: Boolean, italic :: Boolean, underline :: Boolean }
 type State = { buffer :: Array BufferRow, toolbarState :: ToolbarState, freshIds :: Stream Int }
 
 initialState :: forall a. a -> State
-initialState _ = { buffer: [(Row 0 "")], toolbarState: { bold: false, italic: false, underline: false }, freshIds: idStream }
+initialState _ = { buffer: [(Row 0 (Txt ""))], toolbarState: { bold: false, italic: false, underline: false }, freshIds: idStream }
 
 data Stream a = Stream a (Lazy (Stream a))
 
@@ -89,13 +96,17 @@ getCaretOffset = liftEffect $ C.getOffset
 setCaretOffset :: forall output m. MonadEffect m => Int -> H.HalogenM State Action () output m Unit
 setCaretOffset offset = liftEffect $ C.shiftOffset offset
 
+isBold :: forall output m. MonadEffect m => H.HalogenM State Action () output m Boolean
+isBold = H.gets $ \s -> s.toolbarState.bold
+
+isItalic :: forall output m. MonadEffect m => H.HalogenM State Action () output m Boolean
+isItalic = H.gets $ \s -> s.toolbarState.italic
+
 ---------------
 --- Actions ---
 ---------------
 
 data Action = Initialize | InputChanged String String | KeyPress Int KE.KeyboardEvent | ApplyStyle Style | MkList | MkHeading Int
-
-data Style = Bold | Italic
 
 handleAction :: forall output m. MonadEffect m => Action -> H.HalogenM State Action () output m Unit
 handleAction action =
@@ -111,14 +122,15 @@ handleAction action =
             in eventListener IET.input (toEventTarget editorDiv) (map (toInputChanged <<< Editor.getValue) <<< IE.fromEvent)
     InputChanged id str -> do
       offset <- getCaretOffset
+      isBold' <- isBold
       H.modify_ $ \s ->
         let buffer' = do
               i <- findIndex (\(Row id' _) -> id == show id') s.buffer
               id' <- fromString id
-              updateAt i (Row id' str) s.buffer
+              if isBold'
+                then updateAt i (Row id' (Styled Bold (Txt str))) s.buffer
+                else updateAt i (Row id' (Txt str)) s.buffer
         in s { buffer = maybe s.buffer identity buffer' }
-      liftEffect $ do
-        log $ "INPUT CHANGED: " <> id <> " " <> str
       setCaretOffset offset
     KeyPress r e | KE.key e == "Enter" -> do
       liftEffect $ do
@@ -128,16 +140,13 @@ handleAction action =
       focusRow (r + 1)
     KeyPress r e | KE.key e == "ArrowUp" -> do
       liftEffect $ E.preventDefault (KE.toEvent e)
-      focusRow (r - 1)
+      adjustFocus r Up
     KeyPress r e | KE.key e == "ArrowDown" -> do
       liftEffect $ E.preventDefault (KE.toEvent e)
-      focusNextRow r
+      adjustFocus r Down
     KeyPress _ _ -> do
       s <- H.get
-      offset <- getCaretOffset
-      liftEffect $ do
-        log $ "CARET OFFSET: " <> show offset
-        log $ show $ s.buffer
+      liftEffect $ log $ show $ s.buffer
     ApplyStyle style -> do
       liftEffect $ applyStyle style
       case style of
@@ -153,10 +162,9 @@ applyStyle style = case style of
   Bold -> F.bold
   Italic -> F.italic
 
-focusRow :: forall a b c m. MonadEffect m => Int -> H.HalogenM State a b c m Unit
+focusRow :: forall a b c m. MonadEffect m => Id -> H.HalogenM State a b c m Unit
 focusRow i = do
   row <- H.gets $ \s -> index s.buffer i
-  liftEffect $ log $ show row
   case row of
     Nothing -> pure unit
     Just (Row id _) -> do
@@ -166,12 +174,14 @@ focusRow i = do
         maybe (liftEffect (log $ "did not find elem " <> show id)) focus elem
         C.shiftOffset offSet
 
-focusNextRow :: forall a b c m. MonadEffect m => Int -> H.HalogenM State a b c m Unit
-focusNextRow id = do
+adjustFocus :: forall a b c m. MonadEffect m => Id -> ShiftFocus -> H.HalogenM State a b c m Unit
+adjustFocus id dir = do
   buffer <- H.gets $ \s -> s.buffer
   case findIndex (\(Row id' _) -> id == id') buffer of
-    Just j | j < length buffer - 1 -> do
-      focusRow (j + 1)
+    Just j ->
+      case dir of
+        Up -> focusRow (j - 1)
+        Down -> focusRow (j + 1)
     _ -> pure unit
 
 addRow :: forall o m. MonadEffect m => Int -> H.HalogenM State Action () o m Unit
@@ -182,10 +192,7 @@ addRow focusedRow = do
   H.modify_ \state ->
     let j = maybe (length state.buffer) identity $ findIndex (\(Row id _) -> id == focusedRow) state.buffer
         res = splitAt (j + 1) state.buffer
-    in state { buffer = res.before <> [Row i ""] <> res.after }
-
-  -- FFI call to insert new HTML Element
-  --liftEffect $ Editor.insertDiv (show focusedRow) (show i)
+    in state { buffer = res.before <> [Row i (Txt "")] <> res.after }
 
   rowTag' <- H.getHTMLElementRef $ H.RefLabel $ show i
   case rowTag' of
@@ -195,7 +202,7 @@ addRow focusedRow = do
         let toInputChanged r' = InputChanged (r'.id) (r'.content)
         in eventListener IET.input (toEventTarget rowTag) (map (toInputChanged <<< Editor.getValue) <<< IE.fromEvent)
 
---------------
+---------------
 --- Render ---
 --------------
 
@@ -254,15 +261,21 @@ editorForm rows =
   HH.div [ HP.id "editor", HP.ref editorRef ] $ map editorRow rows
 
 editorRow :: forall a. BufferRow -> HH.HTML a Action
-editorRow (Row id str) =
+editorRow (Row id content) =
   HHK.div_ <<< pure <<< Tuple (show id) $
   HH.p
   [ HP.classes [ wrap "content" ]
-  , HP.id $ show id
-  , HP.ref $ H.RefLabel $ show id
-  , HH.attr (HH.AttrName "contenteditable") "true"
   , HE.onKeyDown \e -> KeyPress id e
-  ] [ HH.text str ]
+  ] [ HH.span [ HP.classes $ pure $ wrap "icon-text" ]
+      [ HH.span [ HP.classes $ pure $ wrap "icon" ]
+        [ HH.i [ HP.classes [ wrap "fas", wrap "fa-grip-lines-vertical"] ] []]
+      , HH.span
+          [ HP.id $ show id
+          , HP.ref $ H.RefLabel $ show id
+          , HH.attr (HH.AttrName "contenteditable") "true"
+          ] [ HH.text $ show content ]
+      ]
+    ]
 
 ---------------------------
 --- Text Buffer Parsing ---

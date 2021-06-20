@@ -1,18 +1,25 @@
 {
   "name": "text-editor",
   "version": "0.1.0",
+  "homepage": "https://ssbothwell.github.io/text-editor-prototype",
   "description": "proof of concept text editor interface",
-  "main": "index.js",
   "directories": {
     "test": "test"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "parcel index.html"
+    "dev": "parcel index.html",
+    "build:parcel": "parcel build ./index.html --public-url ./ --no-source-maps",
+    "build": "npm run clean && spago build && npm run build:parcel",
+    "clean": "rm -rf dist/*",
+    "deploy": "gh-pages -d dist"
   },
   "author": "solomon bothwell",
   "license": "ISC",
   "devDependencies": {
     "parcel": "^2.0.0-beta.2"
+  },
+  "dependencies": {
+    "gh-pages": "^3.2.2"
   }
 }

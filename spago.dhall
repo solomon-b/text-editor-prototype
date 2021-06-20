@@ -15,6 +15,7 @@ You can edit this file as you like.
   , "newtype"
   , "prelude"
   , "psci-support"
+  , "purescript-sequences"
   , "tuples"
   , "web-dom"
   , "web-events"
