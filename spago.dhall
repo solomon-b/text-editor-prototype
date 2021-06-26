@@ -13,6 +13,7 @@ You can edit this file as you like.
   , "lazy"
   , "maybe"
   , "newtype"
+  , "partial"
   , "prelude"
   , "psci-support"
   , "purescript-sequences"

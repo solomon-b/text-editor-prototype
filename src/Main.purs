@@ -189,9 +189,7 @@ addRow :: forall o m. MonadEffect m => Int -> H.HalogenM State Action () o m Uni
 addRow focusedRow = do
   offset <- getCaretOffset
   i <- fetchFreshVariable
-
   H.modify_ \state -> state { buffer = bufferInsert focusedRow offset i state.buffer }
-
   rowTag' <- H.getHTMLElementRef $ H.RefLabel $ show i
   case rowTag' of
     Nothing -> pure unit

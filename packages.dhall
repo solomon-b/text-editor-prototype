@@ -126,6 +126,6 @@ in  upstream
       , "unfoldable"
       , "unsafe-coerce"
       ]
-    , repo = "https://github.com/hdgarrood/purescript-sequences.git"
+    , repo = "https://github.com/ssbothwell/purescript-sequences.git"
     , version = "v3.0.2"
     }
