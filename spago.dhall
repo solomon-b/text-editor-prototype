@@ -15,6 +15,7 @@ You can edit this file as you like.
   , "newtype"
   , "partial"
   , "prelude"
+  , "profunctor-lenses"
   , "psci-support"
   , "purescript-sequences"
   , "strings"

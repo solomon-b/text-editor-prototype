@@ -1,4 +1,4 @@
-module Data.FingerTree.Search where
+module Data.FingerTree.Search (SearchResult(..), search) where
 
 import Prelude
 
