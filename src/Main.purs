@@ -34,6 +34,8 @@ import Web.UIEvent.InputEvent as IE
 import Web.UIEvent.InputEvent.EventTypes as IET
 import Web.UIEvent.KeyboardEvent as KE
 
+import Data.Rope
+
 main :: Effect Unit
 main = HA.runHalogenAff do
   body <- HA.awaitBody
@@ -50,6 +52,9 @@ component =
 -------------
 --- State ---
 -------------
+
+-- .. | Italic | H1 | H2 | H3 | H4 | H5 | H6
+--data Annotation = Bold
 
 type Id = Int
 data Content = Styled Style Content | P Content | Txt String

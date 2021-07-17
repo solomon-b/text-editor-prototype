@@ -113,5 +113,3 @@ overAnno f chunk = over anno f chunk
 setAnno :: forall anno anno'. anno'-> Chunk anno -> Chunk anno'
 setAnno a chunk = set anno a chunk
 
--- .. | Italic | H1 | H2 | H3 | H4 | H5 | H6
-data Annotation = Bold
