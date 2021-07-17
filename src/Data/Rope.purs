@@ -6,8 +6,8 @@ import Data.Array (range)
 import Data.FingerTree as FT
 import Data.FingerTree.Search as FT
 import Data.Foldable (class Foldable, foldr, foldl)
-import Data.Identity
-import Data.Lens (set, lens)
+import Data.Identity (Identity)
+import Data.Lens (Lens, set, lens, over)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (class Newtype, wrap, unwrap)
 import Data.Sequence.Internal (class Measured, measure)
@@ -15,6 +15,8 @@ import Data.String as STR
 import Data.Traversable (class Traversable)
 import Data.Tuple (Tuple(..), fst)
 import Partial.Unsafe (unsafeCrashWith, unsafePartial)
+
+import Data.Rope.Chunk
 
 newtype FingerTree v a = FingerTree (FT.FingerTree v a)
 
@@ -32,72 +34,34 @@ instance measuredFingerTree :: (Monoid v, Measured a v) => Measured (FingerTree 
 instance monoidFingerTree :: (Monoid v, Measured a v) => Monoid (FingerTree v a) where
   mempty = wrap FT.Empty
 
--- Character offset to a specific column
-newtype Delta = Delta Int
-
-derive instance newtypeDelta :: Newtype Delta _
-derive newtype instance showDelta :: Show Delta
-derive newtype instance eqDelta :: Eq Delta
-derive newtype instance ordDelta :: Ord Delta
-
-instance semigroupDelta :: Semigroup Delta where
-  append (Delta x) (Delta y) = Delta (x + y)
-
-instance monoidDelta :: Monoid Delta where
-  mempty = Delta 0
-
-instance measuredDeltaRope :: Measured Rope Delta where
+instance measuredDeltaRope :: Measured (Rope anno) Delta where
   measure (Rope tree) = measure tree
 
--- .. | Italic | H1 | H2 | H3 | H4 | H5 | H6
-data Annotation = Bold
+newtype Rope anno = Rope (FingerTree Delta (Chunk anno))
 
-data Chunk = Chunk { chunkLength :: Int, fromChunk :: String, anno :: Maybe Annotation }
-
-chunkAnno = lens get set
-  where
-    get (Chunk { anno }) = anno
-    set (Chunk c) anno' = Chunk $ c { anno = anno' }
-
-instance showChunk :: Show Chunk where
-  show (Chunk {fromChunk}) = fromChunk
-
-instance measuredChunk :: Measured Chunk Delta where
-  measure (Chunk {chunkLength}) = Delta chunkLength
-
-mkChunk :: String -> Maybe Annotation -> Chunk
-mkChunk txt anno = Chunk { chunkLength: (STR.length txt), fromChunk: txt, anno }
-
-splitAtChunk :: Int -> Chunk -> Tuple Chunk Chunk
-splitAtChunk i (Chunk {fromChunk, anno}) =
-  let {before, after} = STR.splitAt i fromChunk
-  in Tuple (mkChunk before anno) (mkChunk after anno)
-
-newtype Rope = Rope (FingerTree Delta Chunk)
-
-instance semigroupRope :: Semigroup Rope where
+instance semigroupRope :: Semigroup (Rope anno) where
   append (Rope a) (Rope b) = Rope $ a <> b
 
-instance monoidRope :: Monoid Rope where
+instance monoidRope :: Monoid (Rope anno) where
   mempty = Rope mempty
 
-instance showRope :: Show Rope where
+instance showRope :: Show (Rope anno) where
   show text = "\"" <> (fromRope text) <> "\""
 
-fromRope :: Rope -> String
+fromRope :: forall anno. Rope anno -> String
 fromRope (Rope tree) = foldr (append <<< show) mempty $ tree
 
-intoRope :: String -> Rope
-intoRope = Rope <<< wrap <<< FT.Single <<< flip mkChunk Nothing
+intoRope :: forall anno. Monoid anno => String -> Rope anno
+intoRope = Rope <<< wrap <<< FT.Single <<< flip mkChunk mempty
 
-replicateRope :: Int -> Rope -> Rope
+replicateRope :: forall anno. Int -> Rope anno -> Rope anno
 replicateRope i (Rope tree) =
   Rope $ foldr (\_ acc -> tree <> acc) mempty (range 1 i)
 
-width :: Rope -> Int
+width :: forall anno. Rope anno -> Int
 width rope = let (Delta x) = measure rope in x
 
-split :: Int -> Rope -> Tuple Rope Rope
+split :: forall anno. Int -> Rope anno -> Tuple (Rope anno) (Rope anno)
 split i (Rope (FingerTree tree)) =
   case unsafePartial FT.search (\(w1) _ -> w1 >= Delta i) tree of
     FT.Position before a after ->
@@ -108,37 +72,46 @@ split i (Rope (FingerTree tree)) =
     FT.OnRight -> Tuple (Rope $ wrap tree) (Rope $ wrap FT.Empty)
     FT.Nowhere -> unsafeCrashWith "Out of bounds index"
 
-insert :: Partial => Int -> Rope -> Rope -> Rope
+insert :: forall anno. Partial => Int -> Rope anno -> Rope anno -> Rope anno
 insert i (Rope new) old =
   let (Tuple (Rope before) (Rope after)) = split i old
   in Rope $ before <> new <> after
 
-indexOf :: STR.Pattern -> Rope -> Maybe Int
+indexOf :: forall anno. STR.Pattern -> Rope anno -> Maybe Int
 indexOf p (Rope tree) = fst $ foldl f (Tuple Nothing 0) tree
   where
-    f :: Tuple (Maybe Int) Int -> Chunk -> Tuple (Maybe Int) Int
+    f :: Tuple (Maybe Int) Int -> Chunk anno -> Tuple (Maybe Int) Int
     f acc (Chunk next) =
       case acc of
         Tuple (Just i) _ -> Tuple (Just i) 0
         Tuple Nothing i ->
-          case STR.indexOf p next.fromChunk of
-            Nothing -> Tuple Nothing (i + STR.length next.fromChunk)
+          case STR.indexOf p next._fromChunk of
+            Nothing -> Tuple Nothing (i + STR.length next._fromChunk)
             Just j -> Tuple (Just (i + j)) 0
 
-cons :: Chunk -> Rope -> Rope
+cons :: forall anno. Chunk anno -> Rope anno -> Rope anno
 cons t (Rope (FingerTree tree)) = Rope $ wrap $ FT.cons t tree
 
-snoc :: Rope -> Chunk -> Rope
+snoc :: forall anno. Rope anno -> Chunk anno -> Rope anno
 snoc (Rope (FingerTree tree)) t = Rope $ wrap $ FT.snoc tree t
 
-splitRange :: Int -> Int -> Rope -> FT.Split Identity Rope
+splitRange :: forall anno. Int -> Int -> Rope anno -> FT.Split Identity (Rope anno)
 splitRange i j rope =
   let Tuple before inter = split i rope
       Tuple target after = split (j - i) inter
   in FT.Split (wrap before) target (wrap after)
 
-applyAnnoToRange :: Maybe Annotation -> Int -> Int -> Rope -> Rope
-applyAnnoToRange anno i j rope =
+applyAnnoToRange :: forall anno. anno -> Int -> Int -> Rope anno -> Rope anno
+applyAnnoToRange a i j rope =
   let FT.Split before (Rope x) after = splitRange i j rope
-      x' = map (set chunkAnno anno) x
+      x' = map (setAnno a) x
   in unwrap before <> Rope x' <> unwrap after
+
+overAnno :: forall anno anno'. (anno -> anno') -> Chunk anno -> Chunk anno'
+overAnno f chunk = over anno f chunk
+
+setAnno :: forall anno anno'. anno'-> Chunk anno -> Chunk anno'
+setAnno a chunk = set anno a chunk
+
+-- .. | Italic | H1 | H2 | H3 | H4 | H5 | H6
+data Annotation = Bold
