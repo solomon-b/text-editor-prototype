@@ -22,6 +22,16 @@ instance semigroupDelta :: Semigroup Delta where
 instance monoidDelta :: Monoid Delta where
   mempty = Delta 0
 
+instance showChunk :: Show anno => Show (Chunk anno) where
+  show (Chunk c) = "Chunk " <> show c._chunkLength <> " " <> c._fromChunk <> " " <> show c._anno
+
+--instance showChunk :: Show (Chunk anno) where
+--  show c = view fromChunk c
+
+instance measuredChunk :: Measured (Chunk anno) Delta where
+  measure = wrap <<< view chunkLength
+
+
 data Chunk anno = Chunk { _chunkLength :: Int, _fromChunk :: String, _anno :: anno }
 
 chunkLength :: forall anno. Lens' (Chunk anno) Int
@@ -41,12 +51,6 @@ anno = lens get set
   where
     get (Chunk { _anno }) = _anno
     set (Chunk c) anno' = Chunk $ c { _anno = anno' }
-
-instance showChunk :: Show (Chunk anno) where
-  show c = view fromChunk c
-
-instance measuredChunk :: Measured (Chunk anno) Delta where
-  measure = wrap <<< view chunkLength
 
 mkChunk :: forall anno. String -> anno -> Chunk anno
 mkChunk txt a = Chunk { _chunkLength: (STR.length txt), _fromChunk: txt, _anno: a }

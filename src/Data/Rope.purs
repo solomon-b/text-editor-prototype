@@ -2,12 +2,12 @@ module Data.Rope where
 
 import Prelude
 
-import Data.Array (range)
+import Data.Array ((:), range)
 import Data.FingerTree as FT
 import Data.FingerTree.Search as FT
 import Data.Foldable (class Foldable, foldr, foldl)
 import Data.Identity (Identity)
-import Data.Lens (Lens, set, lens, over)
+import Data.Lens (Lens, view, set, lens, over)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (class Newtype, wrap, unwrap)
 import Data.Sequence.Internal (class Measured, measure)
@@ -45,14 +45,23 @@ instance semigroupRope :: Semigroup (Rope anno) where
 instance monoidRope :: Monoid (Rope anno) where
   mempty = Rope mempty
 
-instance showRope :: Show (Rope anno) where
-  show text = "\"" <> (fromRope text) <> "\""
+instance showRope :: Show anno => Show (Rope anno) where
+  show (Rope tree) = "Rope " <> foldr (\c xs -> append (show c) xs) mempty tree
 
 fromRope :: forall anno. Rope anno -> String
-fromRope (Rope tree) = foldr (append <<< show) mempty $ tree
+fromRope (Rope tree) = foldr (append <<< view fromChunk) mempty $ tree
 
 intoRope :: forall anno. Monoid anno => String -> Rope anno
 intoRope = Rope <<< wrap <<< FT.Single <<< flip mkChunk mempty
+
+intoArray :: forall anno. Rope anno -> Array (Chunk anno)
+intoArray (Rope tree) = foldr (:) mempty tree
+
+intoAnnoRope :: forall anno. anno -> String -> Rope anno
+intoAnnoRope a = Rope <<< wrap <<< FT.Single <<< flip mkChunk a
+
+emptyRope :: forall anno. Monoid anno => Rope anno
+emptyRope = intoRope mempty
 
 replicateRope :: forall anno. Int -> Rope anno -> Rope anno
 replicateRope i (Rope tree) =
