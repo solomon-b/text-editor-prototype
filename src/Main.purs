@@ -3,8 +3,8 @@ module Main where
 import Prelude
 
 import Caret as C
-import Data.Array (findIndex, index, length, replicate, updateAt, insertAt)
-import Data.Foldable (fold, foldMap)
+import Data.Array (findIndex, index, length, updateAt, insertAt)
+--import Data.Foldable (fold, foldMap)
 import Data.Int (fromString)
 import Data.Lazy (Lazy, defer, force)
 import Data.Lens (view, set)
@@ -14,7 +14,7 @@ import Data.Maybe.Last (Last(..))
 import Data.Newtype (wrap)
 import Data.Rope as R
 import Data.Rope.Chunk as R
-import Data.Traversable (traverse)
+--import Data.Traversable (traverse)
 import Data.Tuple (Tuple(..))
 import Editor as Editor
 import Effect (Effect)
@@ -30,8 +30,8 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Query.Event (eventListener)
 import Halogen.VDom.Driver (runUI)
-import Web.DOM.Node as N
-import Web.DOM.NodeList as NL
+--import Web.DOM.Node as N
+--import Web.DOM.NodeList as NL
 import Web.Event.Event as E
 import Web.HTML.HTMLElement (focus, toEventTarget)
 import Web.UIEvent.InputEvent as IE
@@ -309,7 +309,7 @@ renderRope rope =
 --- Text Buffer Parsing ---
 ---------------------------
 
-data Line = Heading Int (Array Line) | ListItem (Array Line) | Text String | Ann (Array Line) Style
+--data Line = Heading Int (Array Line) | ListItem (Array Line) | Text String | Ann (Array Line) Style
 
 {-
 
