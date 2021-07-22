@@ -6,6 +6,7 @@ You can edit this file as you like.
 , dependencies =
   [ "arrays"
   , "console"
+  , "control"
   , "effect"
   , "foldable-traversable"
   , "halogen"

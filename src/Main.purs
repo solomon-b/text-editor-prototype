@@ -3,18 +3,17 @@ module Main where
 import Prelude
 
 import Caret as C
+import Control.Comonad (extract)
 import Data.Array (findIndex, index, length, updateAt, insertAt)
---import Data.Foldable (fold, foldMap)
 import Data.Int (fromString)
-import Data.Lazy (Lazy, defer, force)
 import Data.Lens (view, set)
 import Data.Lens.Index (ix)
 import Data.Maybe (Maybe(..), maybe)
 import Data.Maybe.Last (Last(..))
 import Data.Newtype (wrap)
 import Data.Rope as R
-import Data.Rope.Chunk as R
---import Data.Traversable (traverse)
+import Data.Rope.Chunk as RC
+import Data.Stream (Stream, mkStream, tailS)
 import Data.Tuple (Tuple(..))
 import Editor as Editor
 import Effect (Effect)
@@ -30,8 +29,6 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Query.Event (eventListener)
 import Halogen.VDom.Driver (runUI)
---import Web.DOM.Node as N
---import Web.DOM.NodeList as NL
 import Web.Event.Event as E
 import Web.HTML.HTMLElement (focus, toEventTarget)
 import Web.UIEvent.InputEvent as IE
@@ -55,10 +52,11 @@ component =
 --- State ---
 -------------
 
--- .. | Italic | H1 | H2 | H3 | H4 | H5 | H6
+type State = { buffer :: Array BufferRow, toolbarState :: ToolbarState, freshIds :: Stream Int }
+type ToolbarState = { bold :: Boolean, italic :: Boolean, underline :: Boolean }
 
 type Id = Int
-data Style = Bold | Italic
+data Style = Bold | Italic -- .. | H1 | H2 | H3 | H4 | H5 | H6
 data BufferRow = Row Id (R.Rope (Last Style))
 data ShiftFocus = Up | Down
 
@@ -70,42 +68,26 @@ instance showStyle :: Show Style where
 instance showBuffer :: Show BufferRow where
   show (Row id content) = "Row " <> show id <> " " <> show content
 
-type ToolbarState = { bold :: Boolean, italic :: Boolean, underline :: Boolean }
-type State = { buffer :: Array BufferRow, toolbarState :: ToolbarState, freshIds :: Stream Int }
-
 initialState :: forall a. a -> State
-initialState _ = { buffer: [(Row 0 R.emptyRope)], toolbarState: { bold: false, italic: false, underline: false }, freshIds: idStream }
-
-data Stream a = Stream a (Lazy (Stream a))
-
-headS :: forall a. Stream a -> a
-headS (Stream a _) = a
-
-tailS :: forall a. Stream a -> Stream a
-tailS (Stream _ as) = force as
-
-idStream :: Stream Int
-idStream = go 1
-  where
-    go i = Stream i (defer $ \_ -> go $ i + 1)
+initialState _ =
+  { buffer: [(Row 0 R.emptyRope)]
+  , toolbarState: { bold: false, italic: false, underline: false }
+  , freshIds: mkStream (\i -> i + 1) 0
+  }
 
 fetchFreshVariable :: forall output m. MonadEffect m => H.HalogenM State Action () output m Int
 fetchFreshVariable = do
-  fresh <- H.gets $ \s -> headS $ s.freshIds
+  fresh <- H.gets $ \s -> extract s.freshIds
   H.modify_ $ \s -> s { freshIds = tailS s.freshIds }
   pure fresh
 
+-- Get the caret offset in the active contenteditable node
 getCaretOffset :: forall output m. MonadEffect m => H.HalogenM State Action () output m Int
 getCaretOffset = liftEffect $ C.getOffset
 
+-- Set the caret offset in the active contenteditable node
 setCaretOffset :: forall output m. MonadEffect m => Int -> H.HalogenM State Action () output m Unit
 setCaretOffset offset = liftEffect $ C.shiftOffset offset
-
-isBold :: forall output m. MonadEffect m => H.HalogenM State Action () output m Boolean
-isBold = H.gets $ \s -> s.toolbarState.bold
-
-isItalic :: forall output m. MonadEffect m => H.HalogenM State Action () output m Boolean
-isItalic = H.gets $ \s -> s.toolbarState.italic
 
 ---------------
 --- Actions ---
@@ -126,19 +108,16 @@ handleAction action =
             let toInputChanged r = InputChanged (r.id) (r.content)
             in eventListener IET.input (toEventTarget editorDiv) (map (toInputChanged <<< Editor.getValue) <<< IE.fromEvent)
     InputChanged id str -> do
-      liftEffect $ log str
       offset <- getCaretOffset
-      isBold' <- isBold
+      isBold <- H.gets $ \s -> s.toolbarState.bold
       H.modify_ $ \s ->
         let buffer' = do
               i <- findIndex (\(Row id' _) -> id == show id') s.buffer
               id' <- fromString id
-              if isBold'
+              if isBold
                 then pure $ set (ix i) (Row id' (R.intoAnnoRope (Last $ Just Bold) str)) s.buffer
                 else pure $ set (ix i) (Row id' (R.intoRope str)) s.buffer
         in s { buffer = maybe s.buffer identity buffer' }
-      s <- H.get
-      liftEffect $ log $ show s.buffer
       setCaretOffset offset
     KeyPress r e | KE.key e == "Enter" -> do
       liftEffect $ do
@@ -152,12 +131,7 @@ handleAction action =
     KeyPress r e | KE.key e == "ArrowDown" -> do
       liftEffect $ E.preventDefault (KE.toEvent e)
       adjustFocus r Down
-    KeyPress _ _ -> do
-      pure unit
-      --s <- H.get
-      --liftEffect $ do
-      --  log $ show s.toolbarState
-      --  log $ show s.buffer
+    KeyPress _ _ -> pure unit
     ApplyStyle style -> do
       liftEffect $ applyStyle style
       case style of
@@ -298,53 +272,9 @@ renderRope :: forall a. R.Rope (Last Style) -> Array (HH.HTML a Action)
 renderRope rope =
   let xs = R.intoArray rope
       f c =
-        let text = HH.text $ view R.fromChunk c
-        in case view R.anno c of
+        let text = HH.text $ view RC.fromChunk c
+        in case view RC.anno c of
             Last (Just Bold) -> HH.b [] [ text ]
             Last (Just Italic) -> HH.i [] [ text ]
             Last Nothing -> text
   in map f xs
-
----------------------------
---- Text Buffer Parsing ---
----------------------------
-
---data Line = Heading Int (Array Line) | ListItem (Array Line) | Text String | Ann (Array Line) Style
-
-{-
-
-<p>hello <b>are <i>you</i> okay</b></p>
-
-Ann [Text "Hello", Ann [Text "are", Ann [Text "you"] Italic , Text "okay"] Bold]
-
--}
-
---flattenNodes :: N.Node -> Effect (Array Line)
---flattenNodes n
---  | N.nodeTypeIndex n == 3 = (pure <<< Text) <$> N.textContent n
---  | N.nodeTypeIndex n == 1 = do
---       children' <- NL.toArray =<< N.childNodes n
---       txts <- fold <$> traverse flattenNodes children'
---       case N.nodeName n of
---         "B" -> pure [Ann txts Bold]
---         "I" -> pure [Ann txts Italic]
---         "LI" -> pure [ListItem txts]
---         "H1" -> pure [Heading 1 txts]
---         "H2" -> pure [Heading 2 txts]
---         "H3" -> pure [Heading 3 txts]
---         "H4" -> pure [Heading 4 txts]
---         "H5" -> pure [Heading 5 txts]
---         "H6" -> pure [Heading 6 txts]
---         _ -> pure txts
---  | otherwise = pure []
-
---printLine :: Line -> String
---printLine (Heading i r) = fold (replicate i "#") <> " " <> foldMap printLine r
---printLine (Text txt) = txt
---printLine (ListItem r) = "- " <> foldMap printLine r
---printLine (Ann [] _) = ""
---printLine (Ann r ann) =
---  let txt = foldMap printLine r
---  in case ann of
---       Bold -> "**" <> txt <> "**"
---       Italic -> "*" <> txt <> "**"
