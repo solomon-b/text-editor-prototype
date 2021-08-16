@@ -19,6 +19,7 @@ import Editor as Editor
 import Effect (Effect)
 import Effect.Class (liftEffect, class MonadEffect)
 import Effect.Console (log)
+import Effect.Exception (throw)
 import Format as F
 import Halogen as H
 import Halogen.Aff as HA
@@ -35,13 +36,43 @@ import Web.UIEvent.InputEvent as IE
 import Web.UIEvent.InputEvent.EventTypes as IET
 import Web.UIEvent.KeyboardEvent as KE
 
-main :: Effect Unit
-main = HA.runHalogenAff do
-  body <- HA.awaitBody
-  runUI component unit body
+import Data.Lens (Lens', over)
+import Data.Lens.Record (prop)
+import Data.Symbol (SProxy(..))
+import Data.Profunctor (dimap)
+import Data.Profunctor.Strong (first, second)
+import SDOM (Attr, SDOM, attach, text, text_)
+import SDOM.Attributes as A
+import SDOM.Elements as E
+import SDOM.Events as Events
+import Web.DOM.NonElementParentNode (getElementById)
+import Web.HTML (window)
+import Web.HTML.HTMLDocument (toNonElementParentNode)
+import Web.HTML.Window (document)
 
-component :: forall query input output m. MonadEffect m => Component query input output m
+main :: Effect Unit
+main = do
+  document <- map toNonElementParentNode (window >>= document)
+  container <- getElementById "main" document
+  case container of
+    Just el -> void do
+      attach el initialState' component
+    Nothing -> throw "No 'main' node!"
+
+component :: forall channel context .
+  SDOM channel context State State
 component =
+  E.div [A.className (\_ _ -> "columns")] []
+    [ E.div [ A.className (\_ _ -> "column") ] [] []
+    , E.div [ A.className (\_ _ -> "column is-5") ] []
+      [ editorToolbar
+      , editorForm
+      ]
+    , E.div [ A.className (\_ _ -> "column") ] [] []
+    ]
+
+component' :: forall query input output m. MonadEffect m => Component query input output m
+component' =
   H.mkComponent
     { initialState
     , render
@@ -53,7 +84,20 @@ component =
 -------------
 
 type State = { buffer :: Array BufferRow, toolbarState :: ToolbarState, freshIds :: Stream Int }
+
+_toolbarState :: forall a r. Lens' { toolbarState :: a | r } a
+_toolbarState = prop (SProxy :: SProxy "toolbarState")
+
 type ToolbarState = { bold :: Boolean, italic :: Boolean, underline :: Boolean }
+
+_bold :: forall a r. Lens' { bold :: a | r } a
+_bold = prop (SProxy :: SProxy "bold")
+
+_italic :: forall a r. Lens' { italic :: a | r } a
+_italic = prop (SProxy :: SProxy "italic")
+
+_underline :: forall a r. Lens' { underline :: a | r } a
+_underline = prop (SProxy :: SProxy "underline")
 
 type Id = Int
 data Style = Bold | Italic -- .. | H1 | H2 | H3 | H4 | H5 | H6
@@ -67,6 +111,13 @@ instance showStyle :: Show Style where
 
 instance showBuffer :: Show BufferRow where
   show (Row id content) = "Row " <> show id <> " " <> show content
+
+initialState' :: State
+initialState' =
+  { buffer: [(Row 0 R.emptyRope)]
+  , toolbarState: { bold: false, italic: false, underline: false }
+  , freshIds: mkStream (\i -> i + 1) 0
+  }
 
 initialState :: forall a. a -> State
 initialState _ =
@@ -204,9 +255,7 @@ render state =
     [ HH.div [ HP.class_ $ wrap "columns" ]
         [ HH.div [ HP.class_ $ wrap "column" ] []
         , HH.div [ HP.classes [ wrap "column", wrap "is-5" ] ]
-          [ editorToolbar state.toolbarState
-          , editorForm state.buffer
-          ]
+          []
         , HH.div [ HP.class_ $ wrap "column" ] []
         ]
     ]
@@ -218,38 +267,52 @@ bufferPreview xs = HH.div_ $ map (HH.div_ <<< pure <<< HH.text) xs
 editorRef :: H.RefLabel
 editorRef = H.RefLabel "editor"
 
-editorToolbar :: forall a. ToolbarState -> HH.HTML a Action
-editorToolbar state = HH.div
-  [ HP.classes [ wrap "box" ] ]
-  [ HH.div [ HP.classes [ wrap "select" ]]
-      [ HH.select []
-          [ HH.option [ HE.onClick \_ -> MkHeading 0]
-             [HH.text "Normal"]
-          , HH.option [ HE.onClick \_ -> MkHeading 1]
-             [HH.text "Heading 1"]
-          , HH.option [ HE.onClick \_ -> MkHeading 2]
-             [HH.text "Heading 2"]
-          , HH.option [ HE.onClick \_ -> MkHeading 3]
-             [HH.text "Heading 3"]
-          , HH.option [ HE.onClick \_ -> MkHeading 4]
-             [HH.text "Heading 4"]
-          , HH.option [ HE.onClick \_ -> MkHeading 5]
-             [HH.text "Heading 5"]
-          , HH.option [ HE.onClick \_ -> MkHeading 6]
-             [HH.text "Heading 6"]
-          ]
-      ]
-  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap (if state.bold then "is-info" else "is-dark") ], HE.onClick \_ -> ApplyStyle Bold ]
-    [ HH.span [ HP.classes [ wrap "fa", wrap "fa-bold", wrap "fa-fw" ] ] [] ]
-  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap (if state.italic then "is-info" else "is-dark") ], HE.onClick \_ -> ApplyStyle Italic ]
-    [ HH.span [ HP.classes [ wrap "fa", wrap "fa-italic", wrap "fa-fw" ]] [] ]
-  , HH.button [ HP.classes [ wrap "button", wrap "is-inverted", wrap "is-dark" ], HE.onClick \_ -> MkList ]
-    [ HH.span [ HP.classes [ wrap "fa", wrap "fa-list", wrap "fa-fw" ] ] [] ]
-  ]
+classes :: forall i o. String -> Attr i o
+classes xs = A.className \_ _ -> xs
 
-editorForm :: forall a. Array BufferRow -> HH.HTML a Action
-editorForm rows =
-  HH.div [ HP.id "editor", HP.ref editorRef ] $ map editorRow rows
+buttonHighlight :: forall context. (ToolbarState -> Boolean) -> Attr context ToolbarState
+buttonHighlight getter = A.className \_ state ->
+  if getter state
+     then "button is-inverted is-info"
+     else "button is-inverted is-dark"
+
+editorToolbar :: forall channel context output.
+  SDOM channel context State State
+editorToolbar = _toolbarState $
+  E.div [ A.className (\_ _ -> "box") ] []
+    [ E.div [ classes "select" ] []
+      [ E.select_
+         [ E.option_ [ text_ "Normal" ]
+         , E.option_ [ text_ "Heading 0" ]
+         , E.option_ [ text_ "Heading 1" ]
+         , E.option_ [ text_ "Heading 2" ]
+         , E.option_ [ text_ "Heading 3" ]
+         , E.option_ [ text_ "Heading 4" ]
+         , E.option_ [ text_ "Heading 5" ]
+         , E.option_ [ text_ "Heading 6" ]
+         , E.option_ [ text_ "Heading 7" ]
+         ]
+      ]
+    , E.button [ buttonHighlight \s -> s.bold ]
+        [ Events.click \_ _ -> pure (over _bold not) ]
+        [ E.span [classes "fa fa-bold fa-fw"] [] []]
+    , E.button [ buttonHighlight \s -> s.italic]
+        [ Events.click \_ _ -> pure (over _italic not) ]
+        [ E.span [classes "fa fa-italic fa-fw"] [] []]
+    , E.button [ buttonHighlight \s -> s.underline]
+        [ Events.click \_ _ -> pure (over _underline not) ]
+        [ E.span [classes "fa fa-underline fa-fw"] [] []]
+    , E.button [ classes "button is-inverted is-dark"] []
+      [ E.span [ classes  "fa fa-list fa-fw" ] [] []]
+    ]
+
+
+editorForm :: forall channel context output.
+  SDOM channel context State State
+editorForm =
+  E.div [ A.id \_ _ -> "editor" ] []
+    [ E.div [ A.attr "contenteditable" \x y -> "true" ] [] []
+    ]
 
 editorRow :: forall a. BufferRow -> HH.HTML a Action
 editorRow (Row id content) =
